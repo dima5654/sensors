@@ -16,9 +16,9 @@ while True:
     gx, gy, gz = imu.gyro
 
     # Apply offsets
-#     gx -= gx_offset
-#     gy -= gy_offset
-#     gz -= gz_offset
+    gx -= gx_offset
+    gy -= gy_offset
+    gz -= gz_offset
 
     print("gx:", gx, "\t", "gy:", gy, "\t", "gz:", gz)
     sleep(0.2)
