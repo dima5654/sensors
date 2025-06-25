@@ -1,6 +1,6 @@
 from machine import Pin
 import time
-from calibrated import get_stable_reading, interpolate
+from tof_data import get_stable_reading, interpolate
 from gyro_data import get_gyro
 from acceleration_data import get_acceleration
 
