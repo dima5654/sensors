@@ -2,20 +2,10 @@ from machine import Pin #For ESP32 to understand Pins
 from time import sleep
 from time import time
 from tof_data import get_stable_reading, interpolate
-from robot_motors import motor_A_forward, motor_B_forward, motor_B_backward, motor_A_backward, stop_motors
+from robot_motors import *
+from odometry import Odometry
 #--- ALL variables for testing line-following ---
 
-class motor:
-    def motor_A_forward(speed):
-        pass
-    def motor_A_backward(speed):
-        pass
-    def motor_B_forward(speed):
-        pass
-    def motor_B_backward(speed):
-        pass
-    def stop_motors():
-        pass
 
 MAX_SPEED = 1023
 speed = 0.4 * MAX_SPEED
@@ -30,6 +20,18 @@ just_replanned = False
 # --- Setup ---
 button = Pin(39, Pin.IN, Pin.PULL_DOWN)
 electromagnet = Pin(5, Pin.OUT)
+
+left_encoder = Encoder(34, 35)
+right_encoder = Encoder(32, 33)
+
+odom = Odometry()
+#----------------
+check = False
+took_box = False
+start_time = 0
+
+# --- Movement logic ---
+robot_heading = 0  # 0: North, 1: East, 2: South, 3: West
 
 # --- Graph definition ---
 graph = {
@@ -76,7 +78,7 @@ graph = {
 }
 
 put_box_nodes = ['B1', 'B2', 'B3', 'B4']  # Nodes where boxes can be put
-take_box_nodes = ['S1', 'S2', 'S3', 'S4']  # Nodes where boxes can be taken
+take_box_nodes = ['A1', 'A2', 'A3', 'A4']  # Nodes where boxes can be taken
 
 goal_node = take_box_nodes[0]  # Example goal node (S1)
 start_node = put_box_nodes[0]  # Example start node (B1)
@@ -118,9 +120,6 @@ print("Press button to start")
 while not button():
     sleep(0.1)
 
-# --- Movement logic ---
-robot_heading = 0  # 0: North, 1: East, 2: South, 3: West
-
 #--- Path preparation ---
 path = dijkstra(graph, start_node, goal_node)
 
@@ -136,12 +135,17 @@ full_path += path
 # Main loop of Robot
 while True:
     ##################   See   ###################
-     
+    # For delta_t
+    end_time = time.ticks_ms()
+    
     Ulrasonic = get_ultrasonic_filtered()
     WaveShaker = read_ir_sensors()
 
     raw = get_stable_reading()
     ToF = interpolate(raw)
+    
+    left_count = left_encoder.get_count()
+    right_count = right_encoder.get_count()
 
     obstacle_detected = Ulrasonic < 15.0 # Threshold for obstacle detection
 
@@ -151,6 +155,11 @@ while True:
     ##################   Think   ###################
     
     #--- Replanning dijkstra if obstacle detected state ---
+
+    if check == True:
+        delta_t = start_time - end_time
+        odom.update_encoders(left_count, right_count, delta_t)
+
     if obstacle_detected:
         print("[ESP32] Obstacle detected, replanning...")
         #Turn 180 degrees
@@ -177,18 +186,34 @@ while True:
         just_replanned = True
         print("[ESP32] New path:", path)
 
+    if next_node in put_box_nodes and took_box:
+        print("[ESP32] Reached a put box node, preparing to put down the box")
+        #Forward_bit 
+        stop_motors()
+        electromagnet.off()
+        sleep(1) 
+        #Turn 180 degrees
+        # Replan path after putting down the box
+        robot_heading = (robot_heading - 2) % 4
+        path = dijkstra(graph, current_node, take_box_nodes[0])  # Replan to the first take box node
+        put_box_nodes.remove(current_node)  # Remove the node from put_box_nodes
+        took_box = False
     #--- Picking box state ---
-    if ToF < 20:  # Threshold for detecting a box mm
-
+    if ToF < 3 and not took_box:  # Threshold for detecting a box mm
+        took_box = True
         print("[ESP32] Box detected by ToF sensor")
-        #Move forward to pick up the box
+        stop_motors()
         electromagnet.on()  
         # Wait for a short time to simulate picking up the box
-        stop_motors()
         sleep(1)
         #Turn 180 degrees 
+        
+        # Replan path after picking up the box
         robot_heading = (robot_heading - 2) % 4
-
+        path = dijkstra(graph, current_node, put_box_nodes[0])  # Replan to the first put box node
+        take_box_nodes.remove(current_node)  # Remove the node from take_box_nodes
+        current_state = 'forward'
+    
     ##################   Line-following   ###################
 
     if left and center and right :
@@ -201,8 +226,7 @@ while True:
             path_index += 1
             
         # Check if goal_node was reached
-        take_box_nodes = ['S1', 'S2', 'S3', 'S4']  # Nodes where boxes can be taken
-
+        
         if path_index + 1 >= len(path):
             print("The goal was reached")
             continue
@@ -214,12 +238,21 @@ while True:
             
         robot_heading, new_heading = get_turn(current_node, next_node, robot_heading)
 
+        if next_node in take_box_nodes:
+            print("[ESP32] Reached a take box node, preparing to pick up the box")
+        elif next_node in put_box_nodes:
+            print("[ESP32] Reached a put box node, preparing to put down the box")
         print(f"[Move] From: {current_node}, To: {next_node}, Heading: {new_heading}")
-    if not right and center:
+
+
+    if not right and left and center:
         current_state = 'swing_right'
        
-    elif not left and center:
+    elif not left and right and center:
         current_state = 'swing_left' 
+
+    if center and not left and not right:
+        current_state = 'forward'
 
     if robot_heading == 0:
         current_state = 'forward'
@@ -232,22 +265,21 @@ while True:
 
     robot_heading = new_heading
     
-    
-   
+
     print(f"Sensor: {message.strip()} - State: {current_state}")
 
     ##################   Act   ###################
     if current_state == 'forward':
-        motor_A_forward(speed) #leftMotor.setVelocity(speed)
-        motor_B_forward(speed) #rightMotor.setVelocity(speed)
+        left_motor_forward(speed) #leftMotor.setVelocity(speed)
+        right_motor_forward(speed) #rightMotor.setVelocity(speed)
 
     if current_state == 'swing_right':
-        motor_A_forward(speed * 0.5) #leftMotor.setVelocity(speed)
-        motor_B_forward(speed) #rightMotor.setVelocity(speed)
+        left_motor_forward(speed * 0.5) #leftMotor.setVelocity(speed)
+        right_motorforward(speed) #rightMotor.setVelocity(speed)
         
     if current_state == 'swing_left':
-        motor_A_forward(speed * 0)
-        motor_B_forward(speed * 0.5) #rightMotor.setVelocity(speed)
+        left_motor_forward(speed * 0)
+        right_motor_forward(speed * 0.5) #rightMotor.setVelocity(speed)
         
     if current_state == 'stop':
         stop_motors() 
@@ -257,8 +289,8 @@ while True:
     if current_state == 'forward_bit':
         turn_start = time.ticks_ms()
         while True:
-            motor_A_forward(speed)
-            motor_B_forward(speed) #rightMotor.setVelocity(speed)
+            left_motor_forward(speed)
+            right_motor_forward(speed) #rightMotor.setVelocity(speed)
             if turn_start >= 0.8:
                 break
         current_state = 'forward'
@@ -266,15 +298,15 @@ while True:
     elif current_state == 'turn_right':
         turn_start = time.ticks_ms()
         while True:
-            motor_A_forward(speed)
-            motor_B_forward(speed) #rightMotor.setVelocity(speed)
+            left_motor_forward(speed)
+            right_motor_forward(speed) #rightMotor.setVelocity(speed)
             if turn_start >= 0.6:
                 break
         turn_start = time.ticks_ms()
         while True:
             
-            motor_A_forward(speed * 0.5)
-            motor_B_backward(speed * 0.5) #rightMotor.setVelocity(speed)
+            left_motor_forward(speed * 0.5)
+            right_motor_backward(speed * 0.5) #rightMotor.setVelocity(speed)
             if turn_start >= 1.76:
                 break
         current_state = 'forward'
@@ -283,16 +315,22 @@ while True:
         turn_start = time.ticks_ms()
         while True:
         
-            motor_A_forward(speed)
-            motor_B_forward(speed) #rightMotor.setVelocity(speed)
+            left_motor_forward(speed)
+            right_motor_forward(speed) #rightMotor.setVelocity(speed)
             if turn_start >= 0.6:
                 break
         turn_start = time.ticks_ms()
         while True:
     
-            motor_A_backward(speed * 0.5)
-            motor_B_forward(speed * 0.5) #rightMotor.setVelocity(speed)
+            left_motor_backward(speed * 0.5)
+            right_motor_forward(speed * 0.5) #rightMotor.setVelocity(speed)
             if turn_start >= 1.76:
                 break
         current_state = 'forward'
+
+        start_time = time.ticks_ms()
+
+        if check == False:
+            check = True
+    
     sleep(0.01)
