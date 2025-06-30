@@ -1,39 +1,40 @@
-
-import ujson as json
 from machine import Pin #For ESP32 to understand Pins
 from time import sleep
-import time
+from time import time
+from tof_data import get_stable_reading, interpolate
+from robot_motors import motor_A_forward, motor_B_forward, motor_B_backward, motor_A_backward, stop_motors
 #--- ALL variables for testing line-following ---
 
-counter = 0
-COUNTER_MAX = 5
-count_if_node = 0
-state_updated = False
+class motor:
+    def motor_A_forward(speed):
+        pass
+    def motor_A_backward(speed):
+        pass
+    def motor_B_forward(speed):
+        pass
+    def motor_B_backward(speed):
+        pass
+    def stop_motors():
+        pass
 
-MAX_SPEED = 6.28
+MAX_SPEED = 1023
 speed = 0.4 * MAX_SPEED
 
-leftMotor.setVelocity(0.0)
-rightMotor.setVelocity(0.0)
+stop_motors()
 
-states = ['forward', 'forward_bit', 'swing_right', 'swing_left', 'turn_right', 'turn_left', 'turn_back', 'stop','nothing']
+states = ['forward', 'forward_bit', 'swing_right', 'swing_left', 'turn_right', 'turn_left', 'stop']
 current_state = 'forward'
 
-loop_counter = 0
 just_replanned = False
-graph_path = []
 
-# Variables to implement the work of robot turning
-node_detected = False
-webots_not_busy = True
-robot_heading = 0
-# --- Button setup ---
+# --- Setup ---
 button = Pin(39, Pin.IN, Pin.PULL_DOWN)
+electromagnet = Pin(5, Pin.OUT)
 
 # --- Graph definition ---
 graph = {
     # Top row
-    'A1': [('S1', 1, 2)],
+    'A1': [('S1', 1, 2)], 
     'A2': [('S2', 1, 2)],
     'A3': [('S3', 1, 2)],
     'A4': [('S4', 1, 2)],
@@ -73,8 +74,12 @@ graph = {
     'B3': [('G3', 1, 0)],
     'B4': [('G4', 1, 0)],
 }
-goal_node = 'B4'  # Example goal node
-start_node = 'A1'  # Example start node
+
+put_box_nodes = ['B1', 'B2', 'B3', 'B4']  # Nodes where boxes can be put
+take_box_nodes = ['S1', 'S2', 'S3', 'S4']  # Nodes where boxes can be taken
+
+goal_node = take_box_nodes[0]  # Example goal node (S1)
+start_node = put_box_nodes[0]  # Example start node (B1)
 
 def dijkstra(graph, start, goal):
     shortest_distance = {node: float('inf') for node in graph}
@@ -114,18 +119,23 @@ while not button():
     sleep(0.1)
 
 # --- Movement logic ---
+robot_heading = 0  # 0: North, 1: East, 2: South, 3: West
+
+#--- Path preparation ---
+path = dijkstra(graph, start_node, goal_node)
+
 path_index = 0
 current_node = path[path_index]
 next_node = path[path_index + 1]
-path = dijkstra(graph, data['start'], goal_node)
 print("[PATH FOUND]", path)
-graph_path += path
 
+# --- Path for replanning if obstacle is detected---
+full_path = []
+full_path += path
 
+# Main loop of Robot
 while True:
-    
     ##################   See   ###################
-    start = time.ticks_ms()
      
     Ulrasonic = get_ultrasonic_filtered()
     WaveShaker = read_ir_sensors()
@@ -133,16 +143,17 @@ while True:
     raw = get_stable_reading()
     ToF = interpolate(raw)
 
-    obstacle_detected = Ulrasonic < 20.0 # Threshold for obstacle detection
+    obstacle_detected = Ulrasonic < 15.0 # Threshold for obstacle detection
 
-    left, center, right = WaveShaker[0] == '0', WaveShaker[1] == '0', WaveShaker[2] == '0'  # '0' means black line detected
-
+    left, center, right = WaveShaker[1] == '0', WaveShaker[2] == '0', WaveShaker[3] == '0'  # '0' means black line detected
+    message = (left, center, right) # For debugging purposes
 
     ##################   Think   ###################
+    
+    #--- Replanning dijkstra if obstacle detected state ---
     if obstacle_detected:
         print("[ESP32] Obstacle detected, replanning...")
         #Turn 180 degrees
-
 
         blocked_node = next_node
         
@@ -150,47 +161,50 @@ while True:
         graph[blocked_node] = [entry for entry in graph[blocked_node] if entry[0] != current_node]
         
         robot_heading = (robot_heading - 2) % 4
-        
         # Rerun Dijkstra
-        try:
-            path = dijkstra(graph, current_node, goal_node)
-            for node in path:
-                if node not in graph_path:
-                    graph_path.append(node)
+        path = dijkstra(graph, current_node, goal_node)
+        
+        for node in path:
+            if node not in full_path:
+                full_path.append(node)
             
-            if len(path) < 2:
-                raise ValueError("No valid path after re-planning")
-            path_index = 0
-            next_node = path[1]
-            current_node= path[0]
-            node_detected = False
-            just_replanned = True
-            print("[ESP32] New path:", path)
-        except Exception as e:
-            print("[ESP32] Replanning failed:", str(e))
-            conn.send(b'fail\n')  # Inform Webots that replanning failed
-            continue  # Skip the rest of this loop
-     
+        if len(path) < 2:
+            raise ValueError("No valid path after re-planning")
+            
+        path_index = 0
+        next_node = path[1]
+        current_node= path[0]
+        just_replanned = True
+        print("[ESP32] New path:", path)
+
+    #--- Picking box state ---
+    if ToF < 20:  # Threshold for detecting a box mm
+
+        print("[ESP32] Box detected by ToF sensor")
+        #Move forward to pick up the box
+        electromagnet.on()  
+        # Wait for a short time to simulate picking up the box
+        stop_motors()
+        sleep(1)
+        #Turn 180 degrees 
+        robot_heading = (robot_heading - 2) % 4
+
+    ##################   Line-following   ###################
+
     if left and center and right :
-        if not node_detected:  # Only trigger once per node
-            print("Node is detected")
-            node_detected = True
+    # Only trigger once per node
+        print("Node is detected")
             
-            if just_replanned:
-                just_replanned = False
-            else:
-                path_index += 1
+        if just_replanned:
+            just_replanned = False
+        else:
+            path_index += 1
             
-            # Check if goal_node was reached
+        # Check if goal_node was reached
+        take_box_nodes = ['S1', 'S2', 'S3', 'S4']  # Nodes where boxes can be taken
+
         if path_index + 1 >= len(path):
-            conn.send(b'stop\n')
             print("The goal was reached")
-                
-            try:
-                msg = json.dumps({'graph_path': graph_path}) + '\n'
-                conn.send(msg.encode())
-            except Exception as e:
-                print("Failed to send final path:", e)
             continue
             
         #Changing variables to new current node and next node
@@ -198,32 +212,87 @@ while True:
         current_node = path[path_index]
         next_node = path[path_index + 1]
             
-        rel_turn, new_heading = get_turn(current_node, next_node, robot_heading)
+        robot_heading, new_heading = get_turn(current_node, next_node, robot_heading)
 
         print(f"[Move] From: {current_node}, To: {next_node}, Heading: {new_heading}")
-            
-            ##################   Act   ###################
-            
-                # Send new state
-        if rel_turn == 0:
-            conn.send(b'forward_bit\n')
-        elif rel_turn == 1:
-            conn.send(b'turn_right\n')
-        elif rel_turn == 2:
-            conn.send(b'turn_back\n')
-        elif rel_turn == 3:
-            conn.send(b'turn_left\n')
-        robot_heading = new_heading
-        webots_not_busy = False
-                # Should wait for Webots finishing turning and going forward a bit that sensor get not 111
-    elif not (left and center and right):
-        node_detected = False
-        conn.send(b'nothing\n')
+    if not right and center:
+        current_state = 'swing_right'
+       
+    elif not left and center:
+        current_state = 'swing_left' 
+
+    if robot_heading == 0:
+        current_state = 'forward'
+    elif robot_heading == 1:
+        current_state = 'turn_right'
+    elif robot_heading == 2:
+        current_state = 'turn_back'
+    elif robot_heading == 3:
+        current_state = 'turn_left'
+
+    robot_heading = new_heading
+    
+    
+   
+    print(f"Sensor: {message.strip()} - State: {current_state}")
+
+    ##################   Act   ###################
+    if current_state == 'forward':
+        motor_A_forward(speed) #leftMotor.setVelocity(speed)
+        motor_B_forward(speed) #rightMotor.setVelocity(speed)
+
+    if current_state == 'swing_right':
+        motor_A_forward(speed * 0.5) #leftMotor.setVelocity(speed)
+        motor_B_forward(speed) #rightMotor.setVelocity(speed)
         
-    end = time.ticks_ms()
-    loop_counter += 1
-    if loop_counter % 20 == 0:
-        print("Loop time:", time.ticks_diff(end, start), "ms")
+    if current_state == 'swing_left':
+        motor_A_forward(speed * 0)
+        motor_B_forward(speed * 0.5) #rightMotor.setVelocity(speed)
+        
+    if current_state == 'stop':
+        stop_motors() 
+        graph_data = data['graph_path']
+        print("Final Path Taken:", ' -> '.join(graph_data))
+
+    if current_state == 'forward_bit':
+        turn_start = time.ticks_ms()
+        while True:
+            motor_A_forward(speed)
+            motor_B_forward(speed) #rightMotor.setVelocity(speed)
+            if turn_start >= 0.8:
+                break
+        current_state = 'forward'
+
+    elif current_state == 'turn_right':
+        turn_start = time.ticks_ms()
+        while True:
+            motor_A_forward(speed)
+            motor_B_forward(speed) #rightMotor.setVelocity(speed)
+            if turn_start >= 0.6:
+                break
+        turn_start = time.ticks_ms()
+        while True:
+            
+            motor_A_forward(speed * 0.5)
+            motor_B_backward(speed * 0.5) #rightMotor.setVelocity(speed)
+            if turn_start >= 1.76:
+                break
+        current_state = 'forward'
+        
+    elif current_state == 'turn_left':
+        turn_start = time.ticks_ms()
+        while True:
+        
+            motor_A_forward(speed)
+            motor_B_forward(speed) #rightMotor.setVelocity(speed)
+            if turn_start >= 0.6:
+                break
+        turn_start = time.ticks_ms()
+        while True:
+    
+            motor_A_backward(speed * 0.5)
+            motor_B_forward(speed * 0.5) #rightMotor.setVelocity(speed)
+            if turn_start >= 1.76:
+                break
+        current_state = 'forward'
     sleep(0.01)
-
-
