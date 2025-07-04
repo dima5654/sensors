@@ -4,8 +4,8 @@ from time import time
 from tof_data import get_stable_reading, interpolate
 from robot_motors import *
 from odometry import Odometry
-#--- ALL variables for testing line-following ---
 
+#--- ALL variables for testing line-following ---
 
 MAX_SPEED = 1023
 speed = 0.4 * MAX_SPEED
@@ -14,8 +14,6 @@ stop_motors()
 
 states = ['forward', 'forward_bit', 'swing_right', 'swing_left', 'turn_right', 'turn_left', 'stop']
 current_state = 'forward'
-
-just_replanned = False
 
 # --- Setup ---
 button = Pin(39, Pin.IN, Pin.PULL_DOWN)
@@ -29,6 +27,9 @@ odom = Odometry()
 check = False
 took_box = False
 start_time = 0
+
+just_replanned = False
+new_path = None
 
 # --- Movement logic ---
 robot_heading = 0  # 0: North, 1: East, 2: South, 3: West
@@ -80,7 +81,7 @@ graph = {
 put_box_nodes = ['B1', 'B2', 'B3', 'B4']  # Nodes where boxes can be put
 take_box_nodes = ['A1', 'A2', 'A3', 'A4']  # Nodes where boxes can be taken
 
-goal_node = take_box_nodes[0]  # Example goal node (S1)
+goal_node = take_box_nodes[0]  # Example goal node (A1)
 start_node = put_box_nodes[0]  # Example start node (B1)
 
 def dijkstra(graph, start, goal):
@@ -128,10 +129,6 @@ current_node = path[path_index]
 next_node = path[path_index + 1]
 print("[PATH FOUND]", path)
 
-# --- Path for replanning if obstacle is detected---
-full_path = []
-full_path += path
-
 # Main loop of Robot
 while True:
     ##################   See   ###################
@@ -154,12 +151,13 @@ while True:
 
     ##################   Think   ###################
     
-    #--- Replanning dijkstra if obstacle detected state ---
+    
 
     if check == True:
         delta_t = start_time - end_time
         odom.update_encoders(left_count, right_count, delta_t)
-
+        
+    #--- Replanning dijkstra if obstacle detected state ---
     if obstacle_detected:
         print("[ESP32] Obstacle detected, replanning...")
         #Turn 180 degrees
@@ -172,10 +170,6 @@ while True:
         robot_heading = (robot_heading - 2) % 4
         # Rerun Dijkstra
         path = dijkstra(graph, current_node, goal_node)
-        
-        for node in path:
-            if node not in full_path:
-                full_path.append(node)
             
         if len(path) < 2:
             raise ValueError("No valid path after re-planning")
@@ -193,11 +187,20 @@ while True:
         electromagnet.off()
         sleep(1) 
         #Turn 180 degrees
+
+        # --- Check if robot has reached the goal node ---
+        if not put_box_nodes:
+            while True:
+                stop_motors()
+                print("[ESP32] All boxes have been put down, stopping the robot.")
+                sleep(1)
+
         # Replan path after putting down the box
         robot_heading = (robot_heading - 2) % 4
         path = dijkstra(graph, current_node, take_box_nodes[0])  # Replan to the first take box node
         put_box_nodes.remove(current_node)  # Remove the node from put_box_nodes
         took_box = False
+
     #--- Picking box state ---
     if ToF < 3 and not took_box:  # Threshold for detecting a box mm
         took_box = True
@@ -216,6 +219,17 @@ while True:
     
     ##################   Line-following   ###################
 
+    
+
+    if center and not left and not right:
+        current_state = 'forward'
+
+    elif not right and left and center:
+        current_state = 'swing_right'
+       
+    elif not left and right and center:
+        current_state = 'swing_left' 
+
     if left and center and right :
     # Only trigger once per node
         print("Node is detected")
@@ -225,18 +239,12 @@ while True:
         else:
             path_index += 1
             
-        # Check if goal_node was reached
-        
-        if path_index + 1 >= len(path):
-            print("The goal was reached")
-            continue
-            
         #Changing variables to new current node and next node
         
         current_node = path[path_index]
         next_node = path[path_index + 1]
-            
         robot_heading, new_heading = get_turn(current_node, next_node, robot_heading)
+        robot_heading = new_heading
 
         if next_node in take_box_nodes:
             print("[ESP32] Reached a take box node, preparing to pick up the box")
@@ -244,27 +252,14 @@ while True:
             print("[ESP32] Reached a put box node, preparing to put down the box")
         print(f"[Move] From: {current_node}, To: {next_node}, Heading: {new_heading}")
 
-
-    if not right and left and center:
-        current_state = 'swing_right'
-       
-    elif not left and right and center:
-        current_state = 'swing_left' 
-
-    if center and not left and not right:
-        current_state = 'forward'
-
-    if robot_heading == 0:
-        current_state = 'forward'
-    elif robot_heading == 1:
-        current_state = 'turn_right'
-    elif robot_heading == 2:
-        current_state = 'turn_back'
-    elif robot_heading == 3:
-        current_state = 'turn_left'
-
-    robot_heading = new_heading
-    
+        if robot_heading == 0:
+            current_state = 'forward'
+        elif robot_heading == 1:
+            current_state = 'turn_right'
+        elif robot_heading == 2:
+            current_state = 'turn_back'
+        elif robot_heading == 3:
+            current_state = 'turn_left'
 
     print(f"Sensor: {message.strip()} - State: {current_state}")
 
@@ -278,13 +273,11 @@ while True:
         right_motorforward(speed) #rightMotor.setVelocity(speed)
         
     if current_state == 'swing_left':
-        left_motor_forward(speed * 0)
+        left_motor_forward(speed)
         right_motor_forward(speed * 0.5) #rightMotor.setVelocity(speed)
         
     if current_state == 'stop':
         stop_motors() 
-        graph_data = data['graph_path']
-        print("Final Path Taken:", ' -> '.join(graph_data))
 
     if current_state == 'forward_bit':
         turn_start = time.ticks_ms()
@@ -328,9 +321,9 @@ while True:
                 break
         current_state = 'forward'
 
-        start_time = time.ticks_ms()
+    start_time = time.ticks_ms()
 
-        if check == False:
-            check = True
+    if check == False:
+        check = True
     
     sleep(0.01)
