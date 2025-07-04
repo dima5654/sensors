@@ -9,7 +9,7 @@ from WaveShaker import *
 #--- ALL variables for testing line-following ---
 
 MAX_SPEED = 1023
-speed = 700
+speed = 1023 * 0.55
 
 stop_motors()
 
@@ -17,14 +17,17 @@ states = ['forward', 'forward_bit', 'swing_right', 'swing_left', 'turn_right', '
 current_state = 'forward'
 
 # --- Setup ---
-button = Pin(5, Pin.IN, Pin.PULL_DOWN)
+button = Pin(35, Pin.IN, Pin.PULL_UP)
 #electromagnet = Pin(5, Pin.OUT)
 
 #left_encoder = Encoder(34, 35)
 #right_encoder = Encoder(32, 33)
 
-#odom = Odometry()
+#odom = Odometry()-
 #----------------
+def is_button_pressed():
+    return button.value() == 0 
+
 check = False
 took_box = False
 start_time = 0
@@ -119,8 +122,12 @@ def get_turn(current_node, next_node, robot_heading):
         
 # --- Wait for button to be pressed ---
 print("Press button to start")
-while not button():
-    sleep(0.1)
+#while not button():
+    #sleep(0.1)
+time.sleep(3.5)
+print("Lets go")
+
+    
 
 #--- Path preparation ---
 path = dijkstra(graph, start_node, goal_node)
@@ -226,9 +233,15 @@ while True:
         current_state = 'swing_right'
        
     elif left and not right and center:
-        current_state = 'swing_left' 
-
-    if left and center and right :
+        current_state = 'swing_left'
+        
+    elif center and left and right:
+        current_state = 'forward'
+    #else:
+        #current_state = ''
+        
+        
+    if False:
     # Only trigger once per node
         print("Node is detected")
             
@@ -265,12 +278,12 @@ while True:
         right_motor_forward(speed) #rightMotor.setVelocity(speed)
 
     if current_state == 'swing_right':
-        left_motor_forward(speed * 0.5) #leftMotor.setVelocity(speed)
-        right_motorforward(speed) #rightMotor.setVelocity(speed)
+        left_motor_forward(speed) #leftMotor.setVelocity(speed)
+        right_motor_forward(speed * 0.7) #rightMotor.setVelocity(speed)
         
     if current_state == 'swing_left':
-        left_motor_forward(speed)
-        right_motor_forward(speed * 0.5) #rightMotor.setVelocity(speed)
+        left_motor_forward(speed * 0.7)
+        right_motor_forward(speed) #rightMotor.setVelocity(speed)
         
     if current_state == 'stop':
         stop_motors() 
@@ -322,4 +335,5 @@ while True:
 
     #if check == False:
         #check = True
-    #sleep(0.01)
+    sleep(0.05)
+
